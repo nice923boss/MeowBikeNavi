@@ -228,6 +228,18 @@ function main() {
     drawLines();
   }
 
+  // The map fills the screen behind the search bar and the planner, so a point is centred in the part left in view.
+  function showPoint(latlng, zoom) {
+    const size = map.getSize();
+    const top = $('topbar').getBoundingClientRect().bottom;
+    const box = planner.getBoundingClientRect();
+    const left = wide.matches ? box.right : 0;
+    const bottom = wide.matches ? size.y : box.top;
+    if (bottom - top < 40 || size.x - left < 40) return map.setView(latlng, zoom);
+    const shift = L.point((left + size.x) / 2, (top + bottom) / 2).subtract(size.divideBy(2));
+    map.setView(map.unproject(map.project(latlng, zoom).subtract(shift), zoom), zoom);
+  }
+
   function fitRoute() {
     const alt = plan.line;
     if (!alt) return;
@@ -702,7 +714,7 @@ function main() {
 
   // ---------- search ----------
   const { hide: hideResults } = setupSearch((place) => {
-    map.setView([place.lat, place.lon], 16);
+    showPoint(L.latLng(place.lat, place.lon), 16);
     openPointPopup(L.latLng(place.lat, place.lon), place.name);
   });
 
@@ -732,7 +744,7 @@ function main() {
       { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 },
     );
   }
-  $('btn-locate').addEventListener('click', () => locate((lat, lon) => map.setView([lat, lon], Math.max(map.getZoom(), 16))));
+  $('btn-locate').addEventListener('click', () => locate((lat, lon) => showPoint(L.latLng(lat, lon), Math.max(map.getZoom(), 16))));
 
   const voice = setupVoice({ sim: SIM });
 
