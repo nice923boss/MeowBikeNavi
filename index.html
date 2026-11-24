@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src 'self' data: blob: https://unpkg.com https://tile.openstreetmap.org https://*.tile-cyclosm.openstreetmap.fr; connect-src 'self' https://valhalla1.openstreetmap.de https://nominatim.openstreetmap.org; base-uri 'none'; form-action 'self'">
+<title>喵騎導航 MeowBikeNavi</title>
+<meta name="description" content="用開源地圖規劃自行車路線：自訂中途點、儲存、反向導航。">
+<meta name="theme-color" content="#1f1f24">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="喵騎導航">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="img/icon-192.png">
+<link rel="apple-touch-icon" href="img/icon-192.png">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<div id="map"></div>
+
+<header id="topbar">
+  <button id="btn-menu" class="round" type="button" aria-label="我的路線"><img src="img/cat-hello.webp" alt=""></button>
+  <form id="search-form" role="search">
+    <input id="search-input" type="search" placeholder="搜尋地點" autocomplete="off" enterkeyhint="search" aria-label="搜尋地點">
+    <button type="submit" aria-label="搜尋">🔍</button>
+  </form>
+</header>
+<div id="search-results" hidden></div>
+
+<div id="map-buttons">
+  <button id="btn-layer" class="round" type="button" aria-label="切換地圖樣式">🗺️</button>
+  <button id="btn-locate" class="round" type="button" aria-label="我的位置">📍</button>
+</div>
+
+<section id="planner" aria-label="路線規劃"></section>
+
+<div id="nav-hud" hidden>
+  <div id="nav-top" class="hud-card">
+    <div id="nav-turn" hidden>
+      <svg id="nav-turn-icon" viewBox="0 0 24 24" aria-hidden="true"><path id="nav-turn-path" d=""/></svg>
+      <div>
+        <strong id="nav-turn-dist"></strong>
+        <span id="nav-turn-text"></span>
+      </div>
+    </div>
+    <div id="nav-remaining">等待定位</div>
+    <div id="nav-sub"></div>
+  </div>
+  <div id="nav-off" class="hud-card" hidden>
+    <img src="img/cat-point.webp" alt="">
+    <div class="nav-off-text">
+      <strong id="nav-off-title"></strong>
+      <span id="nav-off-hint"></span>
+    </div>
+    <svg id="nav-off-arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2l8 13h-5v7H9v-7H4z"/></svg>
+  </div>
+  <div id="nav-bottom">
+    <button id="btn-voice" type="button" hidden aria-pressed="true">🔊 語音</button>
+    <button id="btn-recenter" type="button" hidden>回到我的位置</button>
+    <button id="btn-stop" type="button">結束導航</button>
+  </div>
+</div>
+
+<div id="scrim" hidden></div>
+<aside id="drawer" hidden aria-label="我的路線">
+  <header>
+    <img src="img/cat-hello.webp" alt="">
+    <div><strong>喵騎導航</strong><small>MeowBikeNavi</small></div>
+    <button id="btn-drawer-close" class="round" type="button" aria-label="關閉">✕</button>
+  </header>
+  <h2>我的路線</h2>
+  <div id="route-list"></div>
+  <div class="drawer-actions">
+    <button id="btn-import" type="button">匯入路線檔</button>
+    <button id="btn-backup" type="button">匯出全部備份</button>
+  </div>
+  <h2>存放位置</h2>
+  <div id="storage" class="settings"></div>
+  <p class="note">沒有用資料夾時，路線只存在這支手機的瀏覽器裡。換手機或清除瀏覽資料前，先匯出檔案放到雲端硬碟，再到新手機匯入。</p>
+
+  <h2>語音提醒</h2>
+  <div id="voice-settings" class="settings">
+    <label class="switch"><input id="voice-on" type="checkbox"> 快到轉彎時用語音提醒</label>
+    <label>聲音
+      <select id="voice-name"></select>
+    </label>
+    <label>語速 <output id="voice-rate-out">1.0 倍</output>
+      <input id="voice-rate" type="range" min="0.7" max="1.5" step="0.1" value="1">
+    </label>
+    <button id="btn-voice-test" type="button">試聽</button>
+    <p id="voice-msg" class="note" hidden></p>
+    <p class="note">螢幕鎖定或切到其他 App 時，瀏覽器會暫停定位與語音，騎車時請保持本頁在前景、螢幕開啟。</p>
+  </div>
+</aside>
+
+<dialog id="dlg"></dialog>
+<div id="toast" role="status" hidden></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
