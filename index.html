@@ -35,24 +35,27 @@
 <section id="planner" aria-label="路線規劃"></section>
 
 <div id="nav-hud" hidden>
-  <div id="nav-top" class="hud-card">
-    <div id="nav-turn" hidden>
-      <svg id="nav-turn-icon" viewBox="0 0 24 24" aria-hidden="true"><path id="nav-turn-path" d=""/></svg>
-      <div>
-        <strong id="nav-turn-dist"></strong>
-        <span id="nav-turn-text"></span>
+  <div id="nav-cards" title="按住上下拖曳，調整資訊卡位置">
+    <div id="nav-top" class="hud-card">
+      <div class="hud-grip" aria-hidden="true"></div>
+      <div id="nav-turn" hidden>
+        <svg id="nav-turn-icon" viewBox="0 0 24 24" aria-hidden="true"><path id="nav-turn-path" d=""/></svg>
+        <div>
+          <strong id="nav-turn-dist"></strong>
+          <span id="nav-turn-text"></span>
+        </div>
       </div>
+      <div id="nav-remaining">等待定位</div>
+      <div id="nav-sub"></div>
     </div>
-    <div id="nav-remaining">等待定位</div>
-    <div id="nav-sub"></div>
-  </div>
-  <div id="nav-off" class="hud-card" hidden>
-    <img src="img/cat-point.webp" alt="">
-    <div class="nav-off-text">
-      <strong id="nav-off-title"></strong>
-      <span id="nav-off-hint"></span>
+    <div id="nav-off" class="hud-card" hidden>
+      <img src="img/cat-point.webp" alt="">
+      <div class="nav-off-text">
+        <strong id="nav-off-title"></strong>
+        <span id="nav-off-hint"></span>
+      </div>
+      <svg id="nav-off-arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2l8 13h-5v7H9v-7H4z"/></svg>
     </div>
-    <svg id="nav-off-arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2l8 13h-5v7H9v-7H4z"/></svg>
   </div>
   <div id="nav-bottom">
     <button id="btn-voice" type="button" hidden aria-pressed="true">🔊 語音</button>

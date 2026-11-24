@@ -7,6 +7,8 @@ import { makeLine, advance, START } from './track.js';
 import { placeTurns, reverseTurns, cueLimits, nextTurn, nextCue, cueText, turnText } from './turns.js';
 import { toast, dialog, lsGet, lsSet, geoErrorText } from './ui.js';
 import { pinIcon, userIcon } from './icons.js';
+import { centerFor } from './view.js';
+import { setupHudDrag } from './hud-drag.js';
 
 const L = window.L;
 const NAV_KEY = 'mbn.nav';
@@ -37,10 +39,27 @@ export function createNavigator(map, { onStart, onStop, voice } = {}) {
     offTitle: $('nav-off-title'), offHint: $('nav-off-hint'), offArrow: $('nav-off-arrow'),
     turn: $('nav-turn'), turnPath: $('nav-turn-path'), turnIcon: $('nav-turn-icon'),
     turnDist: $('nav-turn-dist'), turnText: $('nav-turn-text'),
-    recenter: $('btn-recenter'), stop: $('btn-stop'),
+    recenter: $('btn-recenter'), stop: $('btn-stop'), cards: $('nav-cards'), bottom: $('nav-bottom'),
   };
   let s = null; // the active session, null when not navigating
   const say = (text) => voice?.say(text);
+
+  // The rider is kept in the larger clear part of the map, above or below the cards.
+  function clearBox() {
+    const size = map.getSize();
+    const cards = el.cards.getBoundingClientRect();
+    const floor = el.bottom.getBoundingClientRect().top;
+    const above = { left: 0, top: 0, right: size.x, bottom: cards.top };
+    const below = { left: 0, top: cards.bottom, right: size.x, bottom: floor };
+    return above.bottom - above.top > below.bottom - below.top ? above : below;
+  }
+  const followCenter = (p, zoom) => centerFor(map, p, zoom, clearBox());
+
+  setupHudDrag(el.cards, el.bottom, {
+    onMoved: () => {
+      if (s?.follow && s.track.position) map.panTo(followCenter(s.track.position, map.getZoom()), { animate: true, duration: 0.3 });
+    },
+  });
 
   function renderTurn() {
     const t = s.track;
@@ -111,8 +130,12 @@ export function createNavigator(map, { onStart, onStop, voice } = {}) {
 
     if (s.follow) {
       // No zoom animation: a fix arriving mid-animation would have its pan dropped.
-      if (s.fixes === 0) map.setView(p, Math.max(map.getZoom(), 17), { animate: false });
-      else map.panTo(p, { animate: true, duration: 0.5 });
+      if (s.fixes === 0) {
+        const zoom = Math.max(map.getZoom(), 17);
+        map.setView(followCenter(p, zoom), zoom, { animate: false });
+      } else {
+        map.panTo(followCenter(p, map.getZoom()), { animate: true, duration: 0.5 });
+      }
     }
     s.fixes += 1;
     renderHud();
@@ -223,8 +246,12 @@ export function createNavigator(map, { onStart, onStop, voice } = {}) {
     el.off.hidden = true;
     el.recenter.hidden = true;
     onStart?.();
-    map.fitBounds(L.latLngBounds(line.coords), { paddingTopLeft: [30, 110], paddingBottomRight: [30, 90] });
     renderHud();
+    const box = clearBox();
+    map.fitBounds(L.latLngBounds(line.coords), {
+      paddingTopLeft: [30, box.top + 20],
+      paddingBottomRight: [30, map.getSize().y - box.bottom + 20],
+    });
     watch();
     keepAwake();
     // Called from a tap, which lets iOS start speech at all.
@@ -260,7 +287,10 @@ export function createNavigator(map, { onStart, onStop, voice } = {}) {
     if (!s) return;
     s.follow = true;
     el.recenter.hidden = true;
-    if (s.track.position) map.setView(s.track.position, Math.max(map.getZoom(), 17), { animate: false });
+    if (s.track.position) {
+      const zoom = Math.max(map.getZoom(), 17);
+      map.setView(followCenter(s.track.position, zoom), zoom, { animate: false });
+    }
   });
   // Dragging the map by hand pauses following until the rider asks to recentre.
   map.on('dragstart', () => {

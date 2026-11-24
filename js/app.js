@@ -11,6 +11,7 @@ import { folderSupported, savedFolder, rememberFolder, folderAccess, pickFolder,
 import { h, toast, dialog, shareOrDownload, pickFiles, lsGet, lsSet, geoErrorText } from './ui.js';
 import { pinIcon } from './icons.js';
 import { createNavigator } from './nav.js';
+import { centerFor } from './view.js';
 import { setupVoice } from './voice-ui.js';
 
 const L = window.L;
@@ -228,16 +229,17 @@ function main() {
     drawLines();
   }
 
-  // The map fills the screen behind the search bar and the planner, so a point is centred in the part left in view.
+  // The point goes in the middle of the map left clear by the search bar and the planner.
   function showPoint(latlng, zoom) {
     const size = map.getSize();
-    const top = $('topbar').getBoundingClientRect().bottom;
-    const box = planner.getBoundingClientRect();
-    const left = wide.matches ? box.right : 0;
-    const bottom = wide.matches ? size.y : box.top;
-    if (bottom - top < 40 || size.x - left < 40) return map.setView(latlng, zoom);
-    const shift = L.point((left + size.x) / 2, (top + bottom) / 2).subtract(size.divideBy(2));
-    map.setView(map.unproject(map.project(latlng, zoom).subtract(shift), zoom), zoom);
+    const sheet = planner.getBoundingClientRect();
+    const box = {
+      left: wide.matches ? sheet.right : 0,
+      top: $('topbar').getBoundingClientRect().bottom,
+      right: size.x,
+      bottom: wide.matches ? size.y : sheet.top,
+    };
+    map.setView(centerFor(map, latlng, zoom, box), zoom);
   }
 
   function fitRoute() {

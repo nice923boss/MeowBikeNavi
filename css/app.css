@@ -264,6 +264,11 @@ body.navigating #map-buttons { display: none; }
     calc(env(safe-area-inset-bottom) + 12px) calc(env(safe-area-inset-left) + 10px);
 }
 #nav-hud > * { pointer-events: auto; }
+/* The rider drags the cards up and down (js/hud-drag.js). */
+#nav-cards { display: grid; gap: 8px; touch-action: none; cursor: grab; user-select: none; -webkit-user-select: none; }
+#nav-cards.dragging { cursor: grabbing; }
+#nav-cards.dragging .hud-card { box-shadow: 0 6px 18px rgba(31, 31, 36, 0.35); }
+.hud-grip { width: 40px; height: 4px; border-radius: 2px; background: #6b6b73; margin: -4px auto 6px; }
 .hud-card { border-radius: 16px; border: 2px solid var(--ink); box-shadow: var(--shadow); padding: 10px 14px; }
 #nav-top { background: var(--ink); color: #fff; }
 #nav-turn { display: flex; align-items: center; gap: 10px; padding-bottom: 8px; margin-bottom: 8px; border-bottom: 1px solid #45454d; }
@@ -439,5 +444,5 @@ dialog .buttons { display: grid; gap: 8px; }
   #planner { padding-top: 12px; }
   #planner.collapsed .fold { display: revert; }
   .points { max-height: 260px; }
-  #nav-hud > .hud-card { width: 380px; }
+  #nav-cards { width: 380px; }
 }
