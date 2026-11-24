@@ -12,6 +12,7 @@ import { h, toast, dialog, shareOrDownload, pickFiles, lsGet, lsSet, geoErrorTex
 import { pinIcon } from './icons.js';
 import { createNavigator } from './nav.js';
 import { centerFor } from './view.js';
+import { setupSheetDrag } from './sheet-drag.js';
 import { setupVoice } from './voice-ui.js';
 
 const L = window.L;
@@ -80,6 +81,7 @@ function main() {
   );
   new ResizeObserver(syncSheet).observe(planner);
   wide.addEventListener('change', syncSheet);
+  setupSheetDrag(planner, $('topbar'), wide);
   // Popups pan the map so they open clear of the search bar and the planner.
   const popupPad = () => (wide.matches
     ? { autoPanPaddingTopLeft: [400, 16], autoPanPaddingBottomRight: [16, 16] }

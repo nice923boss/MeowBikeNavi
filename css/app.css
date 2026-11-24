@@ -188,12 +188,18 @@ button.round {
 .handle {
   border: 0;
   background: transparent;
-  min-height: 22px;
-  height: 22px;
+  min-height: 28px;
+  height: 28px;
   padding: 0;
   display: grid;
   place-items: center;
+  touch-action: none; /* dragged to resize the sheet (js/sheet-drag.js) */
+  cursor: ns-resize;
 }
+/* Height set by dragging: the point list takes what is left and scrolls, the buttons stay in view. */
+#planner.sized { display: flex; flex-direction: column; max-height: var(--sheet-max); overflow-y: auto; }
+#planner.sized > * { flex-shrink: 0; }
+#planner.sized .points { flex-shrink: 1; min-height: 60px; max-height: none; }
 .handle::before { content: ""; width: 44px; height: 5px; border-radius: 3px; background: #cfc6b8; }
 .summary { display: flex; align-items: center; gap: 10px; min-height: 40px; }
 .summary img { width: 40px; height: 40px; border-radius: 50%; border: 2px solid var(--ink); object-fit: cover; flex: none; }
