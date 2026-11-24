@@ -2,6 +2,7 @@
 import { VEHICLES, BIKE_PRESETS } from './config.js';
 import { encodePolyline, decodePolyline, haversine } from './geo.js';
 import { cleanTurns } from './turns.js';
+import { cleanSegmentMeta } from './segments.js';
 
 const NS = 'urn:meowbikenavi:gpx:1';
 const MAX_TRACK_POINTS = 20000;
@@ -29,6 +30,8 @@ export function routeToGpx(route) {
     `<mbn:duration>${Math.round(route.duration_s)}</mbn:duration>`,
     // Turn prompts: i = index of the trkpt where the turn is.
     ...(route.turns ?? []).map((t) => `<mbn:turn i="${t.i}" k="${esc(t.k)}"${t.from ? ` from="${esc(t.from)}"` : ''}${t.to ? ` to="${esc(t.to)}"` : ''}/>`),
+    // Segments between consecutive rtept: to = index of the trkpt where the segment ends.
+    ...(route.segments ?? []).map((s) => `<mbn:segment to="${s.to}" locked="${s.locked}" walk="${s.walk}" distance="${s.distance_m}" duration="${s.duration_s}"/>`),
     '</extensions>',
     '</metadata>',
     // rte = the points the rider placed (start, via points, end); trk = the exact line to follow.
@@ -60,15 +63,19 @@ function normalizeRoute(raw) {
   if (typeof raw.geometry !== 'string' || !/^[?-~]{4,}$/.test(raw.geometry) || waypoints.length < 2) {
     throw new Error('備份檔內的路線缺少座標');
   }
+  const kept = waypoints.slice(0, MAX_WAYPOINTS);
+  const count = decodePolyline(raw.geometry).length;
+  const segments = cleanSegmentMeta(raw.segments, kept.length, count);
   return {
     name: String(raw.name || '未命名路線').slice(0, 80),
     vehicle: raw.vehicle in VEHICLES ? raw.vehicle : 'bicycle',
     preset: raw.preset in BIKE_PRESETS ? raw.preset : 'balanced',
-    waypoints: waypoints.slice(0, MAX_WAYPOINTS).map((p) => ({
+    waypoints: kept.map((p) => ({
       lat: p.lat, lon: p.lon, ...(typeof p.label === 'string' && p.label ? { label: p.label.slice(0, 120) } : {}),
     })),
     geometry: raw.geometry,
-    turns: cleanTurns(raw.turns, decodePolyline(raw.geometry).length),
+    turns: cleanTurns(raw.turns, count),
+    ...(segments ? { segments } : {}),
     distance_m: Number(raw.distance_m) || 0,
     duration_s: Number(raw.duration_s) || 0,
   };
@@ -93,7 +100,8 @@ function parseGpx(text, filename) {
   let turns = line === routePoints ? [] : cleanTurns(Array.from(doc.getElementsByTagNameNS(NS, 'turn'), (el) => ({
     i: Number(el.getAttribute('i')), k: el.getAttribute('k'), from: el.getAttribute('from'), to: el.getAttribute('to'),
   })), line.length);
-  if (line.length > MAX_TRACK_POINTS) {
+  const thinned = line.length > MAX_TRACK_POINTS;
+  if (thinned) {
     turns = [];
     // Thin very dense recordings so they fit in phone storage; the end point is always kept.
     const step = Math.ceil(line.length / MAX_TRACK_POINTS);
@@ -102,6 +110,13 @@ function parseGpx(text, filename) {
   const coords = line.map((p) => [p.lat, p.lon]);
 
   const hasOwnWaypoints = routePoints.length >= 2 && routePoints.length <= MAX_WAYPOINTS && routePoints !== line;
+  // Like turns, segment ends point at trkpt entries and between the file's own rtept.
+  const segments = hasOwnWaypoints && !thinned
+    ? cleanSegmentMeta(Array.from(doc.getElementsByTagNameNS(NS, 'segment'), (el) => ({
+      to: Number(el.getAttribute('to')), locked: el.getAttribute('locked') === 'true', walk: el.getAttribute('walk') === 'true',
+      distance_m: Number(el.getAttribute('distance')), duration_s: Number(el.getAttribute('duration')),
+    })), routePoints.length, line.length)
+    : null;
   const waypoints = (hasOwnWaypoints ? routePoints : [line[0], line[line.length - 1]]).map((p, i, arr) => ({
     lat: p.lat,
     lon: p.lon,
@@ -122,6 +137,7 @@ function parseGpx(text, filename) {
     waypoints,
     geometry: encodePolyline(coords),
     turns,
+    ...(segments ? { segments } : {}),
     distance_m: Number(ext('distance')) || distance,
     duration_s: duration,
   };

@@ -1,6 +1,7 @@
 // Saved routes live in this browser's localStorage. Export files are the backup and the way to share.
 // Route: { id, name, vehicle, preset, waypoints: [{lat, lon, label?}], geometry (polyline6),
-//          turns: [{i, k, from?, to?}] (see turns.js), distance_m, duration_s, updated_at }
+//          turns: [{i, k, from?, to?}] (see turns.js), segments?: [{to, locked, walk, distance_m, duration_s}]
+//          (see segments.js), distance_m, duration_s, updated_at }
 const KEY = 'mbn.routes';
 
 function readAll() {
@@ -36,7 +37,7 @@ function writeAll(list) {
 const byNewest = (a, b) => String(b.updated_at).localeCompare(String(a.updated_at)) || b.id - a.id;
 
 export function list() {
-  return readAll().slice().sort(byNewest).map(({ geometry, waypoints, turns, ...summary }) => summary);
+  return readAll().slice().sort(byNewest).map(({ geometry, waypoints, turns, segments, ...summary }) => summary);
 }
 
 export function get(id) {

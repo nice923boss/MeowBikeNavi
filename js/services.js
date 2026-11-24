@@ -2,6 +2,7 @@
 import { ROUTER_URL, GEOCODER_URL, VEHICLES, BIKE_PRESETS } from './config.js';
 import { decodePolyline } from './geo.js';
 import { turnsFromLegs } from './turns.js';
+import { planRuns } from './segments.js';
 
 export class ServiceError extends Error {
   constructor(code, message) {
@@ -32,42 +33,69 @@ async function callRouter(payload, signal) {
   throw new ServiceError('router_error', '路線伺服器回應錯誤，請稍後再試');
 }
 
+const WALK_KMH = 4; // pushing a bike is slower than walking
+
+/** One leg of a Valhalla trip as a segment line: { coords, turns, distance_m, duration_s }. */
+function legLine(leg, walk) {
+  const coords = decodePolyline(leg.shape);
+  const distance_m = leg.summary.length * 1000;
+  return {
+    coords,
+    turns: turnsFromLegs([{ maneuvers: leg.maneuvers, count: coords.length }]),
+    distance_m,
+    duration_s: walk ? Math.max(leg.summary.time, distance_m / (WALK_KMH / 3.6)) : leg.summary.time,
+  };
+}
+
 /**
- * Shortest path through the points in order.
- * Returns [{ coords, turns, distance_m, duration_s }]; more than one entry only when there are no via points.
+ * Path through the points in order, one leg per pair of points.
+ * walk: plan for walking (the bike pushed), which may use paths closed to bicycles.
+ * Returns trips, each a list of leg lines; more than one trip only when asked for alternatives.
  */
-export async function planRoute({ vehicle, preset, points }, signal) {
-  const costing = VEHICLES[vehicle].costing;
-  const options = vehicle === 'bicycle' ? BIKE_PRESETS[preset]?.options ?? {} : {};
+async function requestLegs({ vehicle, preset, points, walk, alternates }, signal) {
+  const costing = walk ? 'pedestrian' : VEHICLES[vehicle].costing;
+  const options = !walk && vehicle === 'bicycle' ? BIKE_PRESETS[preset]?.options ?? {} : {};
   const last = points.length - 1;
   const build = (viaType) => ({
     locations: points.map((p, i) => ({ lat: p.lat, lon: p.lon, type: i === 0 || i === last ? 'break' : viaType })),
     costing,
     units: 'kilometers',
     ...(Object.keys(options).length ? { costing_options: { [costing]: options } } : {}),
-    ...(points.length === 2 ? { alternates: 2 } : {}),
+    ...(alternates ? { alternates: 2 } : {}),
   });
 
   let data;
   try {
-    // "through": pass the via point without stopping or doubling back.
-    data = await callRouter(build('through'), signal);
+    // "break_through": a leg ends at the via point, without stopping or doubling back there.
+    data = await callRouter(build('break_through'), signal);
   } catch (err) {
     if (err.code !== 'no_route' || points.length === 2) throw err;
     data = await callRouter(build('break'), signal);
   }
-
   const trips = [data.trip, ...(data.alternates ?? []).map((alt) => alt.trip)].filter(Boolean);
-  return trips.map((trip) => {
-    const shapes = trip.legs.map((leg) => decodePolyline(leg.shape));
-    return {
-      // Consecutive legs share their joint point, so drop the first point of every later leg.
-      coords: shapes.flatMap((shape, i) => (i === 0 ? shape : shape.slice(1))),
-      turns: turnsFromLegs(trip.legs.map((leg, i) => ({ maneuvers: leg.maneuvers, count: shapes[i].length }))),
-      distance_m: trip.summary.length * 1000,
-      duration_s: trip.summary.time,
-    };
-  });
+  return trips.map((trip) => trip.legs.map((leg) => legLine(leg, walk)));
+}
+
+/**
+ * Plan every segment that is not locked, one request per stretch of neighbouring segments
+ * (see planRuns). Walking only applies to bicycles.
+ * Returns { segments, alternatives }; alternatives = other lines for a single unlocked segment.
+ */
+export async function planSegments({ vehicle, preset, points, segments }, signal) {
+  const single = segments.length === 1 && !segments[0].locked;
+  let planned = segments;
+  let alternatives = [];
+  // Pushing the bike only means something on a bicycle; otherwise walk flags must not split the runs.
+  const bike = vehicle === 'bicycle';
+  for (const run of planRuns(bike ? segments : segments.map((s) => ({ ...s, walk: false })))) {
+    const trips = await requestLegs(
+      { vehicle, preset, points: points.slice(run.first, run.last + 2), walk: run.walk, alternates: single }, signal,
+    );
+    const keep = (s) => ({ locked: s.locked, walk: s.walk });
+    planned = planned.map((s, k) => (k < run.first || k > run.last ? s : { ...trips[0][k - run.first], ...keep(s) }));
+    if (single) alternatives = trips.map((legs) => ({ ...legs[0], ...keep(segments[0]) }));
+  }
+  return { segments: planned, alternatives };
 }
 
 let lastGeocode = 0;
@@ -79,7 +107,8 @@ export async function geocode(query) {
   if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
   lastGeocode = Date.now();
   const params = new URLSearchParams({
-    q: query, format: 'jsonv2', limit: '10', // extra rows so duplicates removed below still leave SEARCH_LIMIT results countrycodes: 'tw', 'accept-language': 'zh-TW',
+    // limit: extra rows so the duplicates removed below still leave SEARCH_LIMIT results
+    q: query, format: 'jsonv2', limit: '10', countrycodes: 'tw', 'accept-language': 'zh-TW',
   });
   let res;
   try {

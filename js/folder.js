@@ -126,7 +126,7 @@ export function folderStore(dir) {
     mode: 'folder',
     folderName: dir.name,
     scan,
-    list: async () => (await scan()).routes.map(({ geometry, waypoints, turns, ...summary }) => summary),
+    list: async () => (await scan()).routes.map(({ geometry, waypoints, turns, segments, ...summary }) => summary),
     getAll: async () => (await scan()).routes,
     get: wrap((id) => read(id)),
     create: wrap(async (route) => {

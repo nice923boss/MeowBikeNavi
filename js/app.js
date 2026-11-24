@@ -1,7 +1,10 @@
 // Planner: map, start/via/end points, saved routes, search. Navigation itself lives in nav.js.
 import { DEFAULT_VIEW, VEHICLES, BIKE_PRESETS, TILE_LAYERS } from './config.js';
 import { decodePolyline, encodePolyline, cumulative, projectOnRoute, formatDistance, formatDuration } from './geo.js';
-import { planRoute, geocode, ServiceError } from './services.js';
+import { planSegments, ServiceError } from './services.js';
+import { setupSearch } from './search-ui.js';
+import { blankSegment, carrySegments, joinSegments, segmentMeta, cleanSegmentMeta, splitLine } from './segments.js';
+import { segmentRow, segmentStyle } from './segment-ui.js';
 import * as store from './store.js';
 import { routeToGpx, backupJson, parseRouteFile, fileSafe } from './gpx.js';
 import { folderSupported, savedFolder, rememberFolder, folderAccess, pickFolder, folderStore } from './folder.js';
@@ -88,12 +91,16 @@ function main() {
     vehicle: savedVehicle in VEHICLES ? savedVehicle : 'bicycle',
     preset: savedPreset in BIKE_PRESETS ? savedPreset : 'balanced',
     start: null, end: null, vias: [],
-    alts: [], selected: 0, // planned lines: [{ coords, turns, distance_m, duration_s }]
+    segments: [], // one per pair of points, see segments.js; [] for a saved route without segment data
+    line: null, // the chosen line: joinSegments(segments), or a saved route's line
+    alts: [], selected: 0, // other lines for a route without via points: segments for segments[0]
     routeId: null, name: '', dirty: false, busy: false, error: null,
   });
   let plan = emptyPlan();
   let planTimer = null;
   let planAbort = null;
+  const routePoints = (p) => (p.start && p.end ? [p.start, ...p.vias, p.end] : []);
+  const hasSegments = () => plan.line && plan.segments.length > 0 && plan.segments.length === routePoints(plan).length - 1;
 
   function setPlan(patch) {
     plan = { ...plan, ...patch };
@@ -106,13 +113,25 @@ function main() {
     planAbort = null;
   }
 
-  /** A change made by the rider: redraw the pins and plan again. */
+  /** A change made by the rider: redraw the pins and plan again. Locked segments stay as they are. */
   function editPlan(patch) {
+    const next = { ...plan, ...patch };
+    // Another vehicle takes other roads, so its route is planned from scratch.
+    const vehicleChanged = next.vehicle !== plan.vehicle;
+    const old = vehicleChanged ? plan.segments.map((s) => ({ ...s, locked: false })) : plan.segments;
+    const carried = carrySegments(routePoints(plan), old, routePoints(next));
+    const released = vehicleChanged ? plan.segments.filter((s) => s.locked).length : carried.released;
+    if (released > 0) toast(`已解除 ${released} 段固定路線`);
+    replan(patch, carried.segments);
+  }
+
+  /** Plan the blank segments of `segments` (see planSegments) after the patch is applied. */
+  function replan(patch, segments) {
     cancelPlanning();
-    setPlan({ ...patch, dirty: true });
+    setPlan({ ...patch, segments, dirty: true });
     syncMarkers();
-    if (!plan.start || !plan.end) {
-      setPlan({ alts: [], selected: 0, busy: false, error: null });
+    if (segments.length === 0) {
+      setPlan({ line: null, alts: [], selected: 0, busy: false, error: null });
       drawLines();
       return;
     }
@@ -123,29 +142,43 @@ function main() {
   async function runPlan() {
     const controller = new AbortController();
     planAbort = controller;
-    const hadRoute = plan.alts.length > 0;
+    const hadRoute = Boolean(plan.line);
     try {
-      const alts = await planRoute(
-        { vehicle: plan.vehicle, preset: plan.preset, points: [plan.start, ...plan.vias, plan.end] },
+      const { segments, alternatives } = await planSegments(
+        { vehicle: plan.vehicle, preset: plan.preset, points: routePoints(plan), segments: plan.segments },
         controller.signal,
       );
       if (controller.signal.aborted) return;
-      setPlan({ alts, selected: 0, busy: false, error: null });
+      const alts = alternatives.length > 1 ? alternatives : [];
+      setPlan({ segments, line: joinSegments(segments), alts, selected: 0, busy: false, error: null });
       drawLines();
       if (!hadRoute) fitRoute();
     } catch (err) {
       if (err.name === 'AbortError' || controller.signal.aborted) return;
       console.error('[plan] failed', err);
       setPlan({
-        alts: [], selected: 0, busy: false,
+        line: null, alts: [], selected: 0, busy: false,
         error: err instanceof ServiceError ? err.message : '路線規劃失敗，請稍後再試',
       });
       drawLines();
     }
   }
 
+  function toggleLock(k) {
+    setPlan({ segments: plan.segments.map((s, j) => (j === k ? { ...s, locked: !s.locked } : s)), dirty: true });
+    drawLines();
+  }
+
+  /** Walking a segment plans it again, so it is unlocked; the other unlocked segments are planned with it. */
+  function toggleWalk(k) {
+    replan({}, plan.segments.map((s, j) => {
+      if (j === k) return blankSegment(!s.walk);
+      return s.locked ? s : blankSegment(s.walk);
+    }));
+  }
+
   function currentRoute() {
-    const alt = plan.alts[plan.selected];
+    const alt = plan.line;
     if (!alt || !plan.start || !plan.end) return null;
     const today = new Date();
     const fallback = `${VEHICLES[plan.vehicle].label}路線 ${today.getMonth() + 1}/${today.getDate()}`;
@@ -158,6 +191,8 @@ function main() {
       turns: alt.turns ?? [],
       distance_m: alt.distance_m,
       duration_s: alt.duration_s,
+      // undefined (not left out), so updating a saved route also drops its old segment data
+      segments: hasSegments() ? segmentMeta(plan.segments, plan.line) : undefined,
     };
   }
 
@@ -172,21 +207,29 @@ function main() {
         selectAlt(i);
       });
     });
-    const main = plan.alts[plan.selected];
+    const main = plan.line;
     if (!main) return;
     // Not interactive, so a tap on the line reaches the map and can add a via point there.
     L.polyline(main.coords, { color: '#fff', weight: 11, opacity: 0.9, interactive: false, lineJoin: 'round' }).addTo(lineLayer);
-    L.polyline(main.coords, { color: '#f08a3c', weight: 6, interactive: false, lineJoin: 'round' }).addTo(lineLayer);
+    if (!hasSegments()) {
+      L.polyline(main.coords, segmentStyle(null)).addTo(lineLayer);
+      return;
+    }
+    plan.segments.forEach((s, k) => {
+      const from = k === 0 ? 0 : main.ends[k - 1];
+      L.polyline(main.coords.slice(from, main.ends[k] + 1), segmentStyle(s)).addTo(lineLayer);
+    });
   }
 
   function selectAlt(index) {
     if (index === plan.selected) return;
-    setPlan({ selected: index, dirty: true });
+    const segments = [{ ...plan.alts[index], locked: plan.segments[0].locked }];
+    setPlan({ selected: index, segments, line: joinSegments(segments), dirty: true });
     drawLines();
   }
 
   function fitRoute() {
-    const alt = plan.alts[plan.selected];
+    const alt = plan.line;
     if (!alt) return;
     map.fitBounds(L.latLngBounds(alt.coords), {
       paddingTopLeft: [wide.matches ? 410 : 24, 76],
@@ -222,7 +265,7 @@ function main() {
 
   /** Put a new via point where it falls along the current line, so the route does not double back. */
   function insertVia(point) {
-    const alt = plan.alts[plan.selected];
+    const alt = plan.line;
     if (!alt || plan.vias.length === 0) return [...plan.vias, point];
     const cum = cumulative(alt.coords);
     const alongOf = (p) => projectOnRoute(alt.coords, cum, [p.lat, p.lon]).along;
@@ -256,7 +299,7 @@ function main() {
 
   // ---------- planner sheet ----------
   function renderPlanner() {
-    const alt = plan.alts[plan.selected];
+    const alt = plan.line;
     const ready = Boolean(alt) && !plan.busy;
     const anything = plan.start || plan.end || plan.vias.length > 0;
 
@@ -279,6 +322,12 @@ function main() {
       h('span', { class: 'label' }, point ? labelOf(point) : '點地圖設定'),
       point ? h('button', { type: 'button', 'aria-label': `移除${tag}`, onclick: onRemove }, '✕') : extra,
     );
+    const points = routePoints(plan);
+    const showSegments = plan.segments.length > 0 && plan.segments.length === points.length - 1;
+    const segRow = (k) => showSegments && segmentRow(plan.segments[k], {
+      from: points[k], to: points[k + 1], bike: plan.vehicle === 'bicycle',
+      onLock: () => toggleLock(k), onWalk: () => toggleWalk(k),
+    });
 
     planner.replaceChildren(...[
       h('button', {
@@ -301,7 +350,11 @@ function main() {
       h('div', { class: 'points fold' },
         pointRow('起點', plan.start, () => editPlan({ start: null }),
           h('button', { type: 'button', onclick: () => locate((lat, lon) => editPlan({ start: makePoint(lat, lon, '我的位置') })) }, '📍 用目前位置')),
-        plan.vias.map((via, i) => pointRow(`中途點 ${i + 1}`, via, () => editPlan({ vias: plan.vias.filter((_, j) => j !== i) }))),
+        segRow(0),
+        plan.vias.flatMap((via, i) => [
+          pointRow(`中途點 ${i + 1}`, via, () => editPlan({ vias: plan.vias.filter((_, j) => j !== i) })),
+          segRow(i + 1),
+        ]),
         pointRow('終點', plan.end, () => editPlan({ end: null })),
       ),
       h('div', { class: 'actions' },
@@ -317,7 +370,7 @@ function main() {
   }
 
   async function confirmDiscard() {
-    if (!plan.dirty || plan.alts.length === 0) return true;
+    if (!plan.dirty || !plan.line) return true;
     const answer = await dialog({
       title: '目前的路線還沒儲存',
       message: '要放棄這次的修改嗎？',
@@ -366,6 +419,16 @@ function main() {
   }
 
   // ---------- saved routes drawer ----------
+  /** { segments, line } of a saved route. Routes saved before segments existed keep one plain line. */
+  function savedLine(route, pointCount) {
+    const coords = decodePolyline(route.geometry);
+    const turns = route.turns ?? [];
+    const meta = cleanSegmentMeta(route.segments, pointCount, coords.length);
+    if (!meta) return { segments: [], line: { coords, turns, distance_m: route.distance_m, duration_s: route.duration_s, ends: [] } };
+    const segments = splitLine(coords, turns, meta);
+    return { segments, line: joinSegments(segments) };
+  }
+
   async function openSaved(id) {
     const route = await routeStore.get(id);
     const points = route.waypoints.map((p) => makePoint(p.lat, p.lon, p.label));
@@ -378,10 +441,8 @@ function main() {
       start: points[0],
       end: points[points.length - 1],
       vias: points.slice(1, -1),
-      // The stored line is shown as it was saved; it is only planned again after an edit.
-      alts: [{
-        coords: decodePolyline(route.geometry), turns: route.turns ?? [], distance_m: route.distance_m, duration_s: route.duration_s,
-      }],
+      // The stored line is shown as it was saved; only unlocked segments are planned again after an edit.
+      ...savedLine(route, points.length),
       routeId: id,
       name: route.name,
     };
@@ -490,7 +551,7 @@ function main() {
     folderState = handle ? state : 'none';
     routeStore = handle && state === 'granted' ? folderStore(handle) : localStore;
     // Ids belong to one place, so an opened route is no longer "saved" after switching.
-    if (plan.routeId != null) setPlan({ routeId: null, dirty: plan.alts.length > 0 });
+    if (plan.routeId != null) setPlan({ routeId: null, dirty: Boolean(plan.line) });
   }
 
   function renderStorage() {
@@ -640,45 +701,9 @@ function main() {
   }));
 
   // ---------- search ----------
-  const results = $('search-results');
-  let searchSeq = 0;
-  function hideResults() {
-    searchSeq += 1;
-    results.hidden = true;
-  }
-  $('search-form').addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const query = $('search-input').value.trim();
-    hideResults();
-    if (!query) return;
-    const seq = searchSeq;
-    results.replaceChildren(h('div', { class: 'empty' }, cat('think'), '搜尋中…'));
-    results.hidden = false;
-    try {
-      const places = await geocode(query);
-      if (seq !== searchSeq) return;
-      if (places.length === 0) {
-        results.replaceChildren(h('div', { class: 'empty' }, cat('search'), `找不到「${query}」，換個關鍵字試試`));
-        return;
-      }
-      results.replaceChildren(...places.map((place) => h('button', {
-        type: 'button',
-        onclick: () => {
-          hideResults();
-          $('search-input').blur();
-          map.setView([place.lat, place.lon], 16);
-          openPointPopup(L.latLng(place.lat, place.lon), place.name);
-        },
-      }, place.name, h('small', null, place.detail))));
-    } catch (err) {
-      console.error('[search] failed', err);
-      if (seq !== searchSeq) return;
-      results.hidden = true;
-      toast(err instanceof ServiceError ? err.message : '搜尋失敗，請稍後再試', 'error');
-    }
-  });
-  $('search-input').addEventListener('input', (event) => {
-    if (!event.target.value) hideResults();
+  const { hide: hideResults } = setupSearch((place) => {
+    map.setView([place.lat, place.lon], 16);
+    openPointPopup(L.latLng(place.lat, place.lon), place.name);
   });
 
   // ---------- my location ----------
