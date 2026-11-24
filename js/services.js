@@ -71,6 +71,7 @@ export async function planRoute({ vehicle, preset, points }, signal) {
 }
 
 let lastGeocode = 0;
+const SEARCH_LIMIT = 6;
 
 /** Place search in Taiwan. Nominatim allows at most one request per second. */
 export async function geocode(query) {
@@ -78,7 +79,7 @@ export async function geocode(query) {
   if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
   lastGeocode = Date.now();
   const params = new URLSearchParams({
-    q: query, format: 'jsonv2', limit: '6', countrycodes: 'tw', 'accept-language': 'zh-TW',
+    q: query, format: 'jsonv2', limit: '10', // extra rows so duplicates removed below still leave SEARCH_LIMIT results countrycodes: 'tw', 'accept-language': 'zh-TW',
   });
   let res;
   try {
@@ -92,10 +93,24 @@ export async function geocode(query) {
     throw new ServiceError('geocode_error', '地點搜尋服務暫時無法使用，請稍後再試');
   }
   const rows = await res.json();
-  return rows.map((row) => ({
+  return uniquePlaces(rows.map((row) => ({
     name: row.name || String(row.display_name).split(',')[0],
     detail: row.display_name,
     lat: Number(row.lat),
     lon: Number(row.lon),
-  }));
+  }))).slice(0, SEARCH_LIMIT);
+}
+
+/**
+ * Nominatim returns one row per OSM object, so a pier mapped as both a node and an area
+ * shows up twice with the same address. Keep the first row of each address.
+ */
+export function uniquePlaces(places) {
+  const seen = new Set();
+  return places.filter((place) => {
+    const key = place.detail.trim();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
