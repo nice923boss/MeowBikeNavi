@@ -292,10 +292,11 @@ body.navigating #map-buttons { display: none; }
 .nav-off-text span { font-size: 14px; }
 #nav-off-arrow { width: 52px; height: 52px; flex: none; transition: transform 0.25s; }
 #nav-off-arrow path { fill: var(--ink); stroke: #fff; stroke-width: 1.2; stroke-linejoin: round; }
-#nav-bottom { margin-top: auto; display: flex; gap: 8px; justify-content: flex-end; pointer-events: none !important; }
+#nav-bottom { margin-top: auto; display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; pointer-events: none !important; }
 #nav-bottom button { pointer-events: auto; box-shadow: var(--shadow); border: 2px solid var(--ink); font-weight: 700; }
 #btn-stop { background: var(--ink); color: #fff; }
 #btn-voice { background: #fff; }
+#btn-mark { background: #fff; }
 #btn-voice[aria-pressed="false"] { background: #e6e3dc; color: var(--muted); }
 
 /* ---------- map markers ---------- */

@@ -1,9 +1,9 @@
 // Planner: map, start/via/end points, saved routes, search. Navigation itself lives in nav.js.
 import { DEFAULT_VIEW, VEHICLES, BIKE_PRESETS, TILE_LAYERS } from './config.js';
-import { decodePolyline, encodePolyline, cumulative, projectOnRoute, formatDistance, formatDuration } from './geo.js';
+import { decodePolyline, encodePolyline, cumulative, haversine, formatDistance, formatDuration } from './geo.js';
 import { planSegments, ServiceError } from './services.js';
 import { setupSearch } from './search-ui.js';
-import { blankSegment, carrySegments, joinSegments, segmentMeta, cleanSegmentMeta, splitLine } from './segments.js';
+import { blankSegment, carrySegments, joinSegments, segmentMeta, cleanSegmentMeta, splitLine, viaSlot } from './segments.js';
 import { segmentRow, segmentStyle } from './segment-ui.js';
 import * as store from './store.js';
 import { routeToGpx, backupJson, parseRouteFile, fileSafe } from './gpx.js';
@@ -155,7 +155,7 @@ function main() {
       const alts = alternatives.length > 1 ? alternatives : [];
       setPlan({ segments, line: joinSegments(segments), alts, selected: 0, busy: false, error: null });
       drawLines();
-      if (!hadRoute) fitRoute();
+      if (!hadRoute && !nav.active()) fitRoute();
     } catch (err) {
       if (err.name === 'AbortError' || controller.signal.aborted) return;
       console.error('[plan] failed', err);
@@ -279,15 +279,14 @@ function main() {
     add(plan.end, 'end', 0, '終點', (p) => editPlan({ end: p }));
   }
 
-  /** Put a new via point where it falls along the current line, so the route does not double back. */
-  function insertVia(point) {
-    const alt = plan.line;
-    if (!alt || plan.vias.length === 0) return [...plan.vias, point];
-    const cum = cumulative(alt.coords);
-    const alongOf = (p) => projectOnRoute(alt.coords, cum, [p.lat, p.lon]).along;
-    const at = alongOf(point);
-    const index = plan.vias.findIndex((via) => alongOf(via) > at);
-    return index < 0 ? [...plan.vias, point] : [...plan.vias.slice(0, index), point, ...plan.vias.slice(index)];
+  /**
+   * Put a new via point where it falls along a line (the current one unless given; at = metres along
+   * it, if known), so the route does not double back.
+   */
+  function insertVia(point, at = null, coords = plan.line?.coords) {
+    if (!coords) return [...plan.vias, point];
+    const index = viaSlot(coords, plan.vias, point, at);
+    return [...plan.vias.slice(0, index), point, ...plan.vias.slice(index)];
   }
 
   function openPointPopup(latlng, label) {
@@ -374,8 +373,8 @@ function main() {
         pointRow('終點', plan.end, () => editPlan({ end: null })),
       ),
       h('div', { class: 'actions' },
-        h('button', { type: 'button', class: 'primary', disabled: !ready, onclick: () => nav.start(currentRoute(), false) }, '開始導航'),
-        h('button', { type: 'button', class: 'dark', disabled: !ready, onclick: () => nav.start(currentRoute(), true) }, '反向導航'),
+        h('button', { type: 'button', class: 'primary', disabled: !ready, onclick: () => startNav(currentRoute(), false, true) }, '開始導航'),
+        h('button', { type: 'button', class: 'dark', disabled: !ready, onclick: () => startNav(currentRoute(), true, true) }, '反向導航'),
       ),
       h('div', { class: 'actions fold' },
         h('button', { type: 'button', disabled: !ready, onclick: saveRoute }, '儲存'),
@@ -446,7 +445,12 @@ function main() {
   }
 
   async function openSaved(id) {
-    const route = await routeStore.get(id);
+    loadRoute(await routeStore.get(id), id);
+    closeDrawer();
+    fitRoute();
+  }
+
+  function loadRoute(route, id) {
     const points = route.waypoints.map((p) => makePoint(p.lat, p.lon, p.label));
     cancelPlanning();
     map.closePopup();
@@ -465,8 +469,6 @@ function main() {
     renderPlanner();
     syncMarkers();
     drawLines();
-    closeDrawer();
-    fitRoute();
   }
 
   /** Run a drawer action; storage errors are shown instead of being lost. */
@@ -517,8 +519,8 @@ function main() {
         h('small', null, `${(VEHICLES[r.vehicle] ?? VEHICLES.bicycle).icon} ${formatDistance(r.distance_m)} · ${formatDuration(r.duration_s)}`),
       ),
       h('div', { class: 'row' },
-        small('導航', async () => { const route = await routeStore.get(r.id); closeDrawer(); nav.start(route, false); }, 'primary'),
-        small('反向導航', async () => { const route = await routeStore.get(r.id); closeDrawer(); nav.start(route, true); }, 'dark'),
+        small('導航', async () => { const route = await routeStore.get(r.id); closeDrawer(); startNav(route, false); }, 'primary'),
+        small('反向導航', async () => { const route = await routeStore.get(r.id); closeDrawer(); startNav(route, true); }, 'dark'),
         small('匯出', async () => exportRoute(await routeStore.get(r.id))),
         small('改名', async () => {
           const answer = await dialog({
@@ -761,8 +763,52 @@ function main() {
       if (meMarker) map.removeLayer(meMarker);
     },
     onStop: () => planLayer.addTo(map),
+    onMark: (mark) => markHere(mark).catch((err) => {
+      console.error('[nav] cannot add via point', err);
+      toast('無法加入中途點，請稍後再試', 'error');
+    }),
     voice,
   });
+
+  // fromPlan: the route is the planner's current plan, so it can be edited while riding.
+  let navFromPlan = false;
+  function startNav(route, reverse, fromPlan = false) {
+    navFromPlan = fromPlan;
+    nav.start(route, reverse);
+  }
+
+  /** The rider's position while navigating becomes a via point; the route is planned again and navigation carries on. */
+  async function markHere({ position: [lat, lon], along, route }) {
+    if (!navFromPlan) {
+      // A saved or resumed route: it goes into the planner first, so the change can be saved later.
+      if (!(await confirmDiscard())) return;
+      cancelPlanning();
+      loadRoute(route, route.id ?? null);
+      navFromPlan = true;
+    }
+    if (plan.vias.length >= MAX_VIAS) {
+      toast(`中途點最多 ${MAX_VIAS} 個`, 'error');
+      return;
+    }
+    if (routePoints(plan).some((p) => haversine([p.lat, p.lon], [lat, lon]) < 20)) {
+      toast('這裡已經有路線的點了');
+      return;
+    }
+    const time = new Date().toTimeString().slice(0, 5);
+    const point = makePoint(lat, lon, `導航中加入 ${time}`);
+    // along was measured on the line being ridden, which the planner's line may not be after a failed plan.
+    editPlan({ vias: insertVia(point, along, decodePolyline(route.geometry)) });
+    clearTimeout(planTimer); // the rider is waiting: plan now instead of after the usual pause
+    await runPlan();
+    const i = plan.vias.indexOf(point);
+    if (!nav.active() || i < 0) return;
+    if (!plan.line || plan.error) {
+      toast(`已加入中途點 ${i + 1}，但${plan.error ?? '路線規劃失敗'}。繼續沿原路線導航`, 'error');
+      return;
+    }
+    nav.update(currentRoute(), cumulative(plan.line.coords)[plan.line.ends[i]]);
+    toast(`已加入中途點 ${i + 1}，路線已更新。結束導航後記得儲存`);
+  }
 
   map.on('click', (event) => {
     if (nav.active()) return;
@@ -792,7 +838,7 @@ function main() {
       message: `${pending.route.name ?? ''}\n要繼續導航嗎？`,
       buttons: [{ label: '繼續導航', value: 'resume', primary: true }, { label: '不用了', value: null }],
     }).then((answer) => {
-      if (answer.value === 'resume') nav.start(pending.route, Boolean(pending.reverse));
+      if (answer.value === 'resume') startNav(pending.route, Boolean(pending.reverse));
       else nav.forget();
     });
   }

@@ -14,6 +14,7 @@ const L = window.L;
 const NAV_KEY = 'mbn.nav';
 // ?sim in the address: tap the map to fake the GPS position (for testing indoors).
 const SIM = new URLSearchParams(location.search).has('sim');
+const LINE_OPTIONS = { interactive: false, lineJoin: 'round' };
 
 // Turn arrows drawn for a right-hand turn; left-hand ones are mirrored.
 const ARROW = {
@@ -31,15 +32,19 @@ const ARROW_OF = {
   uturn: ['uturn', true], rb_in: ['roundabout', false], rb_out: ['roundabout', false],
 };
 
-/** voice: { say(text), stop() } from app.js; it stays quiet when the rider turned prompts off. */
-export function createNavigator(map, { onStart, onStop, voice } = {}) {
+/**
+ * voice: { say(text), stop() } from app.js; it stays quiet when the rider turned prompts off.
+ * onMark({ position: [lat, lon], along, route }): the rider asked to make the current position a via point;
+ * along = progress in metres along the route's own (forward) line, or null. The button waits for its promise.
+ */
+export function createNavigator(map, { onStart, onStop, onMark, voice } = {}) {
   const $ = (id) => document.getElementById(id);
   const el = {
     hud: $('nav-hud'), remaining: $('nav-remaining'), sub: $('nav-sub'), off: $('nav-off'),
     offTitle: $('nav-off-title'), offHint: $('nav-off-hint'), offArrow: $('nav-off-arrow'),
     turn: $('nav-turn'), turnPath: $('nav-turn-path'), turnIcon: $('nav-turn-icon'),
     turnDist: $('nav-turn-dist'), turnText: $('nav-turn-text'),
-    recenter: $('btn-recenter'), stop: $('btn-stop'), cards: $('nav-cards'), bottom: $('nav-bottom'),
+    recenter: $('btn-recenter'), stop: $('btn-stop'), mark: $('btn-mark'), cards: $('nav-cards'), bottom: $('nav-bottom'),
   };
   let s = null; // the active session, null when not navigating
   const say = (text) => voice?.say(text);
@@ -76,6 +81,7 @@ export function createNavigator(map, { onStart, onStop, voice } = {}) {
   function renderHud() {
     const t = s.track;
     renderTurn();
+    el.mark.disabled = !t.position || s.marking || s.done;
     if (!t.position) {
       el.remaining.textContent = s.gpsError ? '無法定位' : '等待 GPS 定位…';
       el.sub.textContent = s.gpsError ?? (SIM ? '模擬模式：點地圖模擬目前位置' : '請允許定位，並保持螢幕開啟');
@@ -95,6 +101,7 @@ export function createNavigator(map, { onStart, onStop, voice } = {}) {
     const wasOff = s.track.off;
     const t = advance(s.track, s.line, fix);
     s.track = t;
+    s.lastFix = fix;
     s.accuracy = fix.accuracy;
     s.gpsError = null;
     const p = t.position;
@@ -209,36 +216,53 @@ export function createNavigator(map, { onStart, onStop, voice } = {}) {
     renderHud();
   }
 
-  function start(route, reverse) {
-    stop();
+  /** What navigation needs from a route: { line, waypoints, speed, turns, limits }, or null without coordinates. */
+  function routeState(route, reverse) {
     const base = decodePolyline(route.geometry);
-    if (base.length < 2) {
-      toast('這條路線沒有座標，無法導航', 'error');
-      return;
-    }
+    if (base.length < 2) return null;
     // Reverse: the same line walked backwards, start and end swapped.
     const line = makeLine(reverse ? base.slice().reverse() : base);
-    const waypoints = reverse ? route.waypoints.slice().reverse() : route.waypoints;
-    const layers = L.layerGroup().addTo(map);
-    const lineOptions = { interactive: false, lineJoin: 'round' };
-    L.polyline(line.coords, { ...lineOptions, color: '#fff', weight: 11, opacity: 0.9 }).addTo(layers);
-    L.polyline(line.coords, { ...lineOptions, color: '#f08a3c', weight: 6 }).addTo(layers);
-    const passed = L.polyline([], { ...lineOptions, color: '#8d8a84', weight: 6 }).addTo(layers);
-    const guide = L.polyline([], { ...lineOptions, color: '#1f1f24', weight: 3, dashArray: '4 9' }).addTo(layers);
-    waypoints.forEach((p, i) => {
-      const kind = i === 0 ? 'start' : i === waypoints.length - 1 ? 'end' : 'via';
-      L.marker([p.lat, p.lon], { icon: pinIcon(kind, i), interactive: false, keyboard: false }).addTo(layers);
-    });
-
     const planned = route.distance_m > 0 && route.duration_s > 0;
     const speed = planned ? route.distance_m / route.duration_s : (VEHICLES[route.vehicle] ?? VEHICLES.bicycle).kmh / 3.6;
     const saved = route.turns ?? [];
-    s = {
-      route, reverse, line, layers, passed, guide, speed,
+    return {
+      line,
+      waypoints: reverse ? route.waypoints.slice().reverse() : route.waypoints,
+      speed,
       turns: placeTurns(reverse ? reverseTurns(saved, base.length) : saved, line),
-      said: {}, limits: cueLimits(speed),
-      track: START, user: null, follow: true, fixes: 0, accuracy: null, gpsError: null,
-      watchId: null, wakeLock: null, awake: null, done: false,
+      limits: cueLimits(speed),
+    };
+  }
+
+  /** Draw the line and its pins into `group` (emptied first); returns the line for the part already ridden. */
+  function drawRoute(group, line, waypoints) {
+    group.clearLayers();
+    L.polyline(line.coords, { ...LINE_OPTIONS, color: '#fff', weight: 11, opacity: 0.9 }).addTo(group);
+    L.polyline(line.coords, { ...LINE_OPTIONS, color: '#f08a3c', weight: 6 }).addTo(group);
+    const passed = L.polyline([], { ...LINE_OPTIONS, color: '#8d8a84', weight: 6 }).addTo(group);
+    waypoints.forEach((p, i) => {
+      const kind = i === 0 ? 'start' : i === waypoints.length - 1 ? 'end' : 'via';
+      L.marker([p.lat, p.lon], { icon: pinIcon(kind, i), interactive: false, keyboard: false }).addTo(group);
+    });
+    return passed;
+  }
+
+  function start(route, reverse) {
+    stop();
+    const state = routeState(route, reverse);
+    if (!state) {
+      toast('這條路線沒有座標，無法導航', 'error');
+      return;
+    }
+    const { line, waypoints, ...rest } = state;
+    const layers = L.layerGroup().addTo(map);
+    const routeLayer = L.layerGroup().addTo(layers);
+    const passed = drawRoute(routeLayer, line, waypoints);
+    const guide = L.polyline([], { ...LINE_OPTIONS, color: '#1f1f24', weight: 3, dashArray: '4 9' }).addTo(layers);
+    s = {
+      route, reverse, line, layers, routeLayer, passed, guide, ...rest,
+      said: {}, track: START, lastFix: null, user: null, follow: true, fixes: 0, accuracy: null, gpsError: null,
+      watchId: null, wakeLock: null, awake: null, done: false, marking: false,
     };
     lsSet(NAV_KEY, { route, reverse }); // lets a reloaded page offer to continue
     document.body.classList.add('navigating');
@@ -263,6 +287,25 @@ export function createNavigator(map, { onStart, onStop, voice } = {}) {
     if (notes.length > 0) toast(notes.join('。'));
   }
 
+  /**
+   * Swap in a re-planned version of the route without restarting: the map, following, GPS and wake
+   * lock stay as they are. at = where the rider is along the new line in metres, forward direction.
+   */
+  function update(route, at) {
+    if (!s) return;
+    const state = routeState(route, s.reverse);
+    if (!state) return;
+    const { waypoints, ...rest } = state;
+    const along = at == null ? null : Math.min(Math.max(s.reverse ? rest.line.total - at : at, 0), rest.line.total);
+    Object.assign(s, rest, { route, said: {}, track: { ...START, along }, done: false });
+    s.passed = drawRoute(s.routeLayer, s.line, waypoints);
+    s.guide.bringToFront();
+    lsSet(NAV_KEY, { route, reverse: s.reverse });
+    say('已加入中途點，路線已更新');
+    if (s.lastFix) onFix(s.lastFix);
+    else renderHud();
+  }
+
   function stop() {
     if (!s) return;
     voice?.stop();
@@ -282,6 +325,23 @@ export function createNavigator(map, { onStart, onStop, voice } = {}) {
       buttons: [{ label: '結束導航', value: 'stop', primary: true }, { label: '繼續騎', value: null }],
     });
     if (answer.value) stop();
+  });
+  el.mark.addEventListener('click', async () => {
+    if (!s?.track.position || s.marking || !onMark) return;
+    const session = s;
+    const { along } = session.track;
+    session.marking = true;
+    renderHud();
+    try {
+      await onMark({
+        position: session.track.position,
+        along: along == null ? null : session.reverse ? session.line.total - along : along,
+        route: session.route,
+      });
+    } finally {
+      session.marking = false;
+      if (s === session) renderHud();
+    }
   });
   el.recenter.addEventListener('click', () => {
     if (!s) return;
@@ -319,6 +379,7 @@ export function createNavigator(map, { onStart, onStop, voice } = {}) {
 
   return {
     start,
+    update,
     stop,
     active: () => s != null,
     /** The navigation that was running when the page was last closed, or null. */

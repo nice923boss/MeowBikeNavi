@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  blankSegment, carrySegments, planRuns, joinSegments, jointKind, segmentMeta, cleanSegmentMeta, splitLine, isDetour,
+  blankSegment, carrySegments, planRuns, joinSegments, jointKind, segmentMeta, cleanSegmentMeta, splitLine, isDetour, viaSlot,
 } from '../js/segments.js';
 
 const P = (lat, lon) => ({ lat, lon });
@@ -125,4 +125,23 @@ test('isDetour flags a bike segment far longer than the straight line', () => {
   assert.equal(isDetour(planned([[0, 0]], { distance_m: 600 }), from, to), false);
   assert.equal(isDetour(planned([[0, 0]], { distance_m: 4500, walk: true }), from, to), false);
   assert.equal(isDetour(blankSegment(), from, to), false);
+});
+
+test('viaSlot puts a new point before the first via farther along the line', () => {
+  const line = [[25, 121], [25.01, 121], [25.02, 121], [25.03, 121]];
+  assert.equal(viaSlot(line, [], P(25.015, 121)), 0);
+  assert.equal(viaSlot(line, [B, C], P(25.005, 121.0005)), 0);
+  assert.equal(viaSlot(line, [B, C], P(25.015, 121.0005)), 1);
+  assert.equal(viaSlot(line, [B, C], P(25.025, 121.0005)), 2);
+});
+
+test('viaSlot trusts a given distance along the line over where the point projects', () => {
+  // An out-and-back line: the point lies on both passes; the rider is on the way back.
+  const line = [[25, 121], [25.02, 121], [25, 121.0001]];
+  const out = P(25.015, 121); // on the way out
+  const back = P(25.005, 121.00008); // on the way back
+  const rider = P(25.01, 121.00001); // nearer the way out
+  const total = 2 * 2224; // about 2.2 km each way
+  assert.equal(viaSlot(line, [out, back], rider), 0);
+  assert.equal(viaSlot(line, [out, back], rider, total * 0.75), 1);
 });

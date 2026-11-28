@@ -2,7 +2,7 @@
 // Segment: { coords, turns, distance_m, duration_s, locked, walk }
 //   coords null = still to be planned; locked = kept as it is when the route is planned again;
 //   walk = planned for walking the bike, for paths that the map data closes to bicycles.
-import { haversine, bearing } from './geo.js';
+import { haversine, bearing, cumulative, projectOnRoute } from './geo.js';
 
 export const blankSegment = (walk = false) => ({ coords: null, turns: [], distance_m: 0, duration_s: 0, locked: false, walk });
 
@@ -148,4 +148,18 @@ export function isDetour(segment, from, to) {
   if (!segment.coords || segment.walk) return false;
   const straight = haversine([from.lat, from.lon], [to.lat, to.lon]);
   return segment.distance_m > straight * 2.5 && segment.distance_m - straight > 1000;
+}
+
+/**
+ * Index in `vias` for a new via point, so the route does not double back: before the first via
+ * farther along `coords`. at = the new point's distance along the line in metres, or null to work it
+ * out from the point itself.
+ */
+export function viaSlot(coords, vias, point, at = null) {
+  if (vias.length === 0) return 0;
+  const cum = cumulative(coords);
+  const alongOf = (p) => projectOnRoute(coords, cum, [p.lat, p.lon]).along;
+  const here = at ?? alongOf(point);
+  const index = vias.findIndex((via) => alongOf(via) > here);
+  return index < 0 ? vias.length : index;
 }
